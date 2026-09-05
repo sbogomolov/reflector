@@ -13,7 +13,7 @@ use std::process::Command;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::capture::Capture;
+use crate::capture::{Capture, Read};
 use crate::interface::{Interface, InterfaceAddresses, Ipv6Scope, if_index};
 use crate::net::packet::Packet;
 use crate::sys::socklen_of;
@@ -459,7 +459,8 @@ fn capture_injected(peer: &mut Capture, dest: IpAddr) -> io::Result<Option<Captu
     let deadline = Instant::now() + WAIT_BUDGET;
     while Instant::now() < deadline {
         match peer.next_frame()? {
-            Some(frame) => {
+            Some(Read::Oversized) => {}
+            Some(Read::Frame(frame)) => {
                 let Ok(packet) = Packet::parse(link, frame) else {
                     continue; // unrelated non-UDP or malformed traffic
                 };

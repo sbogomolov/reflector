@@ -37,7 +37,7 @@ use std::ops::Deref;
 use std::os::fd::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
 
-use crate::capture::Capture;
+use crate::capture::{Capture, Read};
 use crate::interface::{InterfaceAddresses, InterfaceEvent, InterfaceMonitor};
 use crate::linear_map::LinearMap;
 use crate::net::LinkType;
@@ -518,9 +518,10 @@ impl PacketDispatcher {
         .map_err(io::Error::other)
     }
 
-    /// Drain the capture `ingress` addresses and route each parsed packet. Reads up to
-    /// [`MAX_FRAMES_PER_EVENT`] frames, then yields for fairness (the BPF batch
-    /// exception is via `has_buffered`); a read error abandons the batch and logs.
+    /// Drain the capture `ingress` addresses and route each parsed packet. Makes up to
+    /// [`MAX_FRAMES_PER_EVENT`] reads, dropped oversized frames included, then yields for
+    /// fairness (the BPF batch exception is via `has_buffered`); a read error abandons the
+    /// batch and logs.
     fn drain_and_route(&mut self, ingress: CaptureKey, reactor: &mut Reactor) {
         // Take the ingress capture OUT: the parsed Packet then borrows the owned local, not
         // `self`, so `&mut self` is free for routing, and a reflector can send on the OTHER
@@ -544,7 +545,11 @@ impl PacketDispatcher {
                 break;
             }
             let frame = match capture.next_frame() {
-                Ok(Some(frame)) => frame,
+                Ok(Some(Read::Frame(frame))) => frame,
+                Ok(Some(Read::Oversized)) => {
+                    drained += 1;
+                    continue;
+                }
                 Ok(None) => break,
                 Err(e) => {
                     // A dead capture's read error (Linux parks ENETDOWN on the unregistered
@@ -1102,7 +1107,7 @@ fn oversize_context(e: io::Error, if_name: &str, frame_len: usize, mtu: Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::open_or_skip;
+    use crate::capture::{loopback_lock, open_or_skip};
     use crate::interface::LOOPBACK_IFACE;
     use std::cell::{Cell, RefCell};
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
@@ -1480,6 +1485,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn routes_a_captured_packet_to_a_matching_reflector() -> io::Result<()> {
+        let _serial = loopback_lock();
         let Some(ingress_cap) = open_or_skip(LOOPBACK_IFACE, "dispatch_ingress")? else {
             return Ok(());
         };
@@ -1907,6 +1913,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn reentrant_drain_on_the_same_ingress_hits_the_guard() -> io::Result<()> {
+        let _serial = loopback_lock();
         let Some(ingress_cap) = open_or_skip(LOOPBACK_IFACE, "dispatch_reentrant")? else {
             return Ok(());
         };
@@ -1979,6 +1986,7 @@ mod tests {
     )]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn reentrant_drain_on_another_ingress_trips_the_assert() -> io::Result<()> {
+        let _serial = loopback_lock();
         let Some(cap_a) = open_or_skip(LOOPBACK_IFACE, "dispatch_cross_a")? else {
             return Ok(());
         };
@@ -2031,6 +2039,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn reactor_drives_the_dispatcher_to_route_a_packet() -> io::Result<()> {
+        let _serial = loopback_lock();
         let Some(ingress_cap) = open_or_skip(LOOPBACK_IFACE, "dispatch_reactor_in")? else {
             return Ok(());
         };
@@ -2136,6 +2145,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn ingress_resolves_and_drops_while_taken_out() -> io::Result<()> {
+        let _serial = loopback_lock();
         let Some(ingress_cap) = open_or_skip(LOOPBACK_IFACE, "dispatch_mid_drain")? else {
             return Ok(());
         };

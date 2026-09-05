@@ -16,6 +16,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use libc::{c_uint, c_ulong, c_void};
 
+use super::Read;
 use super::filter::{BpfInsn, DLT_NULL_UDP_FILTER, ETHERNET_UDP_FILTER};
 use crate::libcex::bpf_wordalign;
 use crate::logging::{WARN_WINDOW, log_rate};
@@ -119,45 +120,45 @@ impl Capture {
         &self.name
     }
 
-    /// The next captured frame, refilling from the kernel when the current batch
-    /// is drained. Returns `Ok(None)` when nothing more is ready (the batch is
-    /// empty and a read would block). Truncated/oversized records are skipped.
+    /// The next read, refilling from the kernel when the current batch is drained: a frame,
+    /// or a truncated/oversized record dropped and counted. Returns `Ok(None)` when nothing
+    /// more is ready (the batch is empty and a read would block).
     ///
     /// # Errors
     /// Returns an error if the read fails, or the kernel batch is malformed (the
     /// rest of that batch is then abandoned).
-    pub(crate) fn next_frame(&mut self) -> io::Result<Option<&[u8]>> {
-        let range = loop {
-            if self.offset >= self.filled && !self.refill()? {
-                return Ok(None);
-            }
-            let start = self.offset;
-            let (record, advance) = match parse_record(&self.buf[start..self.filled]) {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    self.offset = self.filled; // abandon the malformed batch
-                    return Err(e);
-                }
-            };
-            self.offset = start + advance;
-            match record {
-                Record::Frame(frame) => break (start + frame.start)..(start + frame.end),
-                // Rate-limited: this is the per-frame drain loop, and a remote peer can flood
-                // oversized frames.
-                Record::Oversized { datalen } => {
-                    log_rate!(
-                        log::Level::Warn,
-                        WARN_WINDOW,
-                        "{}: dropping oversized frame: {datalen} bytes exceeds the {}-byte \
-                         forwarding limit",
-                        self.name,
-                        crate::net::MAX_FRAME_LEN
-                    );
-                    self.oversized += 1;
-                }
+    pub(crate) fn next_frame(&mut self) -> io::Result<Option<Read<'_>>> {
+        if self.offset >= self.filled && !self.refill()? {
+            return Ok(None);
+        }
+        let start = self.offset;
+        let (record, advance) = match parse_record(&self.buf[start..self.filled]) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                self.offset = self.filled; // abandon the malformed batch
+                return Err(e);
             }
         };
-        Ok(Some(&self.buf[range]))
+        self.offset = start + advance;
+        match record {
+            Record::Frame(frame) => Ok(Some(Read::Frame(
+                &self.buf[start + frame.start..start + frame.end],
+            ))),
+            // Rate-limited: this is the per-frame drain loop, and a remote peer can flood
+            // oversized frames.
+            Record::Oversized { datalen } => {
+                log_rate!(
+                    log::Level::Warn,
+                    WARN_WINDOW,
+                    "{}: dropping oversized frame: {datalen} bytes exceeds the {}-byte \
+                     forwarding limit",
+                    self.name,
+                    crate::net::MAX_FRAME_LEN
+                );
+                self.oversized += 1;
+                Ok(Some(Read::Oversized))
+            }
+        }
     }
 
     /// Whether the current batch still holds unread records: the cue to keep
@@ -362,7 +363,7 @@ mod tests {
     use std::mem::offset_of;
 
     use super::*;
-    use crate::capture::open_or_skip;
+    use crate::capture::{loopback_lock, open_or_skip};
     use crate::libcex::BPF_ALIGN;
 
     /// Append one synthetic BPF record (header + frame + word-align padding) to
@@ -493,7 +494,10 @@ mod tests {
         sender.send_to(PROBE, target).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
-            while let Some(frame) = capture.next_frame().unwrap() {
+            while let Some(read) = capture.next_frame().unwrap() {
+                let Read::Frame(frame) = read else {
+                    continue;
+                };
                 if frame.len() > 4
                     && u32::from_ne_bytes(frame[..4].try_into().unwrap()) == family
                     && frame[4] >> 4 == version
@@ -507,6 +511,37 @@ mod tests {
         false
     }
 
+    // A record past the forwarding limit is dropped, but it still costs a read, so the drain
+    // budget counts it: one oversized datagram on lo0 yields one `Read::Oversized`.
+    #[test]
+    #[cfg_attr(miri, ignore = "needs a real capture device")]
+    fn an_oversized_record_costs_a_read() -> io::Result<()> {
+        let _serial = loopback_lock();
+        let Some(mut capture) = open_or_skip("lo0", "bpf_oversized")? else {
+            return Ok(());
+        };
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        // lo0's MTU carries it whole, so it arrives as one record past MAX_FRAME_LEN.
+        sender.send_to(
+            &[0u8; 2 * crate::net::MAX_FRAME_LEN],
+            receiver.local_addr()?,
+        )?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match capture.next_frame()? {
+                Some(Read::Oversized) => break,
+                Some(Read::Frame(_)) => {} // unrelated loopback traffic
+                None if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                None => panic!("did not capture the oversized datagram on lo0"),
+            }
+        }
+        assert!(capture.take_oversized() >= 1);
+        Ok(())
+    }
+
     // Live loopback capture: `lo0` reports DLT_NULL, so this exercises `link_type()`,
     // both branches of the DLT_NULL filter (the per-OS AF_INET/AF_INET6 constants and
     // their host-order byte-swap, at different header offsets), and the see-sent skip.
@@ -515,6 +550,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn loopback_capture_decodes_known_frames() -> io::Result<()> {
+        let _serial = loopback_lock();
         let Some(mut capture) = open_or_skip("lo0", "loopback_capture")? else {
             return Ok(());
         };
@@ -558,6 +594,7 @@ mod tests {
 
         const PROBE: &[u8] = b"netflector-loopback-send-probe";
 
+        let _serial = loopback_lock();
         let Some(cap) = open_or_skip("lo0", "loopback_send")? else {
             return Ok(());
         };
