@@ -17,6 +17,14 @@ pub(crate) use self::af_packet::Capture;
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 pub(crate) use self::bpf::Capture;
 
+/// One read of a capture.
+#[derive(Debug)]
+pub(crate) enum Read<'a> {
+    Frame(&'a [u8]),
+    /// A frame too large to forward, dropped and counted.
+    Oversized,
+}
+
 /// Open a capture on `if_name`, returning `Ok(None)` (and noting why) when the host
 /// can't: no BPF access / `CAP_NET_RAW`, or the interface is absent. Other errors
 /// propagate for the caller to `?`.
@@ -38,9 +46,19 @@ pub(crate) fn open_or_skip(if_name: &str, what: &str) -> std::io::Result<Option<
     }
 }
 
+/// The tests that open a capture on the loopback interface hold this for their duration: every
+/// descriptor attached there sees every frame, and the kernel's small double buffer drops what
+/// a concurrent test's traffic leaves no room for.
+#[cfg(test)]
+pub(crate) fn loopback_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::open_or_skip;
+    use super::{Read, open_or_skip};
     use crate::net::LinkType;
 
     // Live capture against a real interface (`NETFLECTOR_TEST_IFACE`). Backend-neutral
@@ -64,7 +82,8 @@ mod tests {
         let mut validated = 0u32;
         while validated < 8 && std::time::Instant::now() < deadline {
             match capture.next_frame()? {
-                Some(frame) => {
+                Some(Read::Oversized) => {}
+                Some(Read::Frame(frame)) => {
                     assert!(frame.len() >= 14, "frame shorter than an Ethernet header");
                     let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
                     assert!(

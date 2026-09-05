@@ -288,7 +288,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::capture::Capture;
+    use crate::capture::{Capture, loopback_lock};
     use crate::dispatch::MessageType;
 
     /// Open a loopback capture, or `None` (skip) without `CAP_NET_RAW`. A real capture gives the
@@ -420,6 +420,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn a_suppressed_payload_is_dropped_before_the_send() {
+        let _serial = loopback_lock();
         // The Dropped outcome proves the early return: a completed loopback send would be Reflected.
         let Some((mut reflector, mut dispatcher, mut reactor)) =
             reflector_over_loopback(Box::new(NoRewrite), |_| true)
@@ -459,6 +460,7 @@ mod tests {
             SUPPRESS_CONSULTED.store(true, Ordering::Relaxed);
             true
         }
+        let _serial = loopback_lock();
         let Some((mut reflector, mut dispatcher, mut reactor)) =
             reflector_over_loopback(Box::new(ReplaceRewrite), tracking_suppress)
         else {

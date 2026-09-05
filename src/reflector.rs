@@ -271,7 +271,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::capture::Capture;
+    use crate::capture::{Capture, loopback_lock};
     use crate::interface::LOOPBACK_IFACE;
     use crate::net::mac::MacAddr;
 
@@ -290,6 +290,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn macs_matchability_follows_the_target_link_framing() {
+        let _serial = loopback_lock();
         let Some(cap) = open_loopback_or_skip() else {
             return;
         };
@@ -318,6 +319,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn a_join_failure_no_event_clears_fails_the_build() {
+        let _serial = loopback_lock();
         let Some(cap) = open_loopback_or_skip() else {
             return;
         };

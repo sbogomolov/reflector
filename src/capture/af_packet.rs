@@ -13,6 +13,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 use libc::{c_int, c_void};
 
+use super::Read;
 use super::filter::{BpfInsn, DROP_OUTGOING_PROLOGUE, ETHERNET_UDP_FILTER};
 use crate::interface::if_index;
 use crate::logging::{WARN_WINDOW, log_rate};
@@ -146,35 +147,32 @@ impl Capture {
         &self.name
     }
 
-    /// The next captured frame, or `Ok(None)` when a read would block. Oversized
-    /// frames (larger than the receive buffer) are dropped and the next is returned.
+    /// The next read: a frame, or an oversized one (larger than the receive buffer) dropped
+    /// and counted; `Ok(None)` when a read would block.
     ///
     /// # Errors
     /// Returns an error if the `recv` fails for any reason other than would-block.
-    pub(crate) fn next_frame(&mut self) -> io::Result<Option<&[u8]>> {
-        let len = loop {
-            let Some(bytes) = self.recv_once()? else {
-                return Ok(None);
-            };
-            // MSG_TRUNC reports the frame's real length even past the buffer, so an
-            // oversized frame is detectable (and dropped) instead of silently cut.
-            if bytes > self.buf.len() {
-                // Rate-limited: this is the per-frame drain loop, and a remote peer can flood
-                // oversized frames.
-                log_rate!(
-                    log::Level::Warn,
-                    WARN_WINDOW,
-                    "{}: dropping oversized frame: {bytes} bytes exceeds the {}-byte receive \
-                     buffer",
-                    self.name,
-                    self.buf.len()
-                );
-                self.oversized += 1;
-                continue;
-            }
-            break bytes;
+    pub(crate) fn next_frame(&mut self) -> io::Result<Option<Read<'_>>> {
+        let Some(bytes) = self.recv_once()? else {
+            return Ok(None);
         };
-        Ok(Some(&self.buf[..len]))
+        // MSG_TRUNC reports the frame's real length even past the buffer, so an
+        // oversized frame is detectable (and dropped) instead of silently cut.
+        if bytes > self.buf.len() {
+            // Rate-limited: this is the per-frame drain loop, and a remote peer can flood
+            // oversized frames.
+            log_rate!(
+                log::Level::Warn,
+                WARN_WINDOW,
+                "{}: dropping oversized frame: {bytes} bytes exceeds the {}-byte receive \
+                 buffer",
+                self.name,
+                self.buf.len()
+            );
+            self.oversized += 1;
+            return Ok(Some(Read::Oversized));
+        }
+        Ok(Some(Read::Frame(&self.buf[..bytes])))
     }
 
     /// Whether frames are buffered locally. Never, for `AF_PACKET`: each `recv` is
@@ -340,7 +338,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 
     use super::*;
-    use crate::capture::open_or_skip;
+    use crate::capture::{loopback_lock, open_or_skip};
     use crate::net::frame;
     use crate::net::mac::MacAddr;
 
@@ -369,6 +367,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn captures_a_known_frame_on_lo() -> io::Result<()> {
         const PROBE: &[u8] = b"netflector-afpacket-capture-probe";
+        let _serial = loopback_lock();
         let Some(mut capture) = open_or_skip("lo", "afpacket_capture")? else {
             return Ok(());
         };
@@ -386,7 +385,10 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut decoded = false;
         while !decoded && std::time::Instant::now() < deadline {
-            while let Some(frame) = capture.next_frame()? {
+            while let Some(read) = capture.next_frame()? {
+                let Read::Frame(frame) = read else {
+                    continue;
+                };
                 if frame.len() >= 14 && frame.ends_with(PROBE) {
                     let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
                     assert!(ethertype == 0x0800 || ethertype == 0x86dd);
@@ -402,6 +404,37 @@ mod tests {
         Ok(())
     }
 
+    // A frame past the receive buffer is dropped, but it still costs a read, so the drain
+    // budget counts it: one oversized datagram on lo yields one `Read::Oversized`.
+    #[test]
+    #[cfg_attr(miri, ignore = "needs a real capture device")]
+    fn an_oversized_frame_costs_a_read() -> io::Result<()> {
+        let _serial = loopback_lock();
+        let Some(mut capture) = open_or_skip("lo", "afpacket_oversized")? else {
+            return Ok(());
+        };
+        let receiver = UdpSocket::bind("127.0.0.1:0")?;
+        let sender = UdpSocket::bind("127.0.0.1:0")?;
+        // lo's MTU carries it whole, so it arrives as one frame past MAX_FRAME_LEN.
+        sender.send_to(
+            &[0u8; 2 * crate::net::MAX_FRAME_LEN],
+            receiver.local_addr()?,
+        )?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match capture.next_frame()? {
+                Some(Read::Oversized) => break,
+                Some(Read::Frame(_)) => {} // unrelated loopback traffic
+                None if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                None => panic!("did not capture the oversized datagram on lo"),
+            }
+        }
+        assert!(capture.take_oversized() >= 1);
+        Ok(())
+    }
+
     // Live send: inject a built Ethernet frame on `lo` via send(), then capture it
     // back. lo loops every transmitted frame to its input tap, and we keep the RX
     // copy (PACKET_IGNORE_OUTGOING drops only the TX copy), so this validates that
@@ -412,6 +445,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn send_loops_back_on_lo() -> io::Result<()> {
         const PROBE: &[u8] = b"netflector-afpacket-send-probe";
+        let _serial = loopback_lock();
         let Some(mut capture) = open_or_skip("lo", "afpacket_send")? else {
             return Ok(());
         };
@@ -429,7 +463,10 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut looped = false;
         while !looped && std::time::Instant::now() < deadline {
-            while let Some(frame) = capture.next_frame()? {
+            while let Some(read) = capture.next_frame()? {
+                let Read::Frame(frame) = read else {
+                    continue;
+                };
                 if frame.ends_with(PROBE) {
                     looped = true;
                     break;

@@ -476,7 +476,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::capture::Capture;
+    use crate::capture::{Capture, loopback_lock};
     use crate::reflector::NoRewrite;
 
     const TEST_TTL: u8 = 2;
@@ -919,6 +919,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn suppression_drops_an_untouched_reply() {
+        let _serial = loopback_lock();
         // The Dropped outcome proves the early return: a completed loopback send would be Reflected.
         let Some((mut reflector, mut dispatcher, mut reactor)) =
             reply_over_loopback(Box::new(NoRewrite), |_| true)
@@ -942,6 +943,7 @@ mod tests {
             SUPPRESS_CONSULTED.store(true, Ordering::Relaxed);
             true
         }
+        let _serial = loopback_lock();
         let Some((mut reflector, mut dispatcher, mut reactor)) =
             reply_over_loopback(Box::new(ReplaceRewrite), tracking_suppress)
         else {
@@ -972,6 +974,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "needs a real capture device")]
     fn a_failed_reflect_rolls_back_the_session_registration() {
+        let _serial = loopback_lock();
         // make_session makes the response registration before reflecting; if the reflect then fails, that
         // registration must be rolled back, not leaked. A real loopback target lets make_session succeed;
         // an oversized payload then makes build_udp reject the reflect deterministically.
