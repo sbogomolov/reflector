@@ -255,8 +255,9 @@ mod tests {
         // Distinct dst/src MACs so a swapped read would fail.
         let dst_mac = MacAddr::from([0x02, 0, 0, 0, 0, 0xaa]);
         let src_mac = MacAddr::from([0x02, 0, 0, 0, 0, 0xbb]);
-        let n =
-            frame::ethernet_ipv4_udp(dst_mac, src_mac, src, dst, 64, &payload, &mut buf).unwrap();
+        let n = frame::ethernet_ipv4_udp(dst_mac, src_mac, src, dst, 64, &payload, &mut buf)
+            .unwrap()
+            .len;
 
         let packet = Packet::parse(LinkType::Ethernet, &buf[..n]).unwrap();
         assert_eq!(packet.source, SocketAddr::V4(src));
@@ -275,8 +276,9 @@ mod tests {
         let mut buf = [0u8; 80];
         let dst_mac = MacAddr::from([0x33, 0x33, 0, 0, 0, 0xfb]);
         let src_mac = MacAddr::from([0x02, 0, 0, 0, 0, 0xbb]);
-        let n =
-            frame::ethernet_ipv6_udp(dst_mac, src_mac, src, dst, 255, &payload, &mut buf).unwrap();
+        let n = frame::ethernet_ipv6_udp(dst_mac, src_mac, src, dst, 255, &payload, &mut buf)
+            .unwrap()
+            .len;
 
         let packet = Packet::parse(LinkType::Ethernet, &buf[..n]).unwrap();
         assert_eq!(packet.source, SocketAddr::V6(src));
@@ -294,7 +296,9 @@ mod tests {
         let dst = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5354);
         let payload = [0x01, 0x02];
         let mut buf = [0u8; 64];
-        let n = frame::dlt_null_ipv4_udp(src, dst, 64, &payload, &mut buf).unwrap();
+        let n = frame::dlt_null_ipv4_udp(src, dst, 64, &payload, &mut buf)
+            .unwrap()
+            .len;
 
         let packet = Packet::parse(LinkType::DltNull, &buf[..n]).unwrap();
         assert_eq!(packet.source, SocketAddr::V4(src));
@@ -313,7 +317,9 @@ mod tests {
         let dst = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 5354, 0, 0);
         let payload = [0x09];
         let mut buf = [0u8; 80];
-        let n = frame::dlt_null_ipv6_udp(src, dst, 255, &payload, &mut buf).unwrap();
+        let n = frame::dlt_null_ipv6_udp(src, dst, 255, &payload, &mut buf)
+            .unwrap()
+            .len;
 
         let packet = Packet::parse(LinkType::DltNull, &buf[..n]).unwrap();
         assert_eq!(packet.source, SocketAddr::V6(src));
@@ -331,7 +337,9 @@ mod tests {
         let payload = [0x11, 0x22, 0x33];
         let mut buf = [0u8; 64]; // zero-filled tail stands in for padding
         let mac = MacAddr::broadcast();
-        let n = frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, &payload, &mut buf).unwrap();
+        let n = frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, &payload, &mut buf)
+            .unwrap()
+            .len;
 
         let packet = Packet::parse(LinkType::Ethernet, &buf[..n + 10]).unwrap();
         assert_eq!(packet.payload, &payload);
@@ -367,7 +375,9 @@ mod tests {
         let src = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 1234);
         let dst = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 5678);
         let mac = MacAddr::broadcast();
-        frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, &[0xab; 4], buf).unwrap()
+        frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, &[0xab; 4], buf)
+            .unwrap()
+            .len
     }
 
     #[test]
@@ -474,7 +484,9 @@ mod tests {
         let dst = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 2);
         let mac = MacAddr::broadcast();
         let mut buf = [0u8; 64];
-        let n = frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, &[], &mut buf).unwrap();
+        let n = frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, &[], &mut buf)
+            .unwrap()
+            .len;
         let packet = Packet::parse(LinkType::Ethernet, &buf[..n]).unwrap();
         assert!(packet.payload.is_empty());
     }
@@ -485,7 +497,9 @@ mod tests {
         let src = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 1234, 0, 0);
         let dst = SocketAddrV6::new(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb), 5678, 0, 0);
         let mac = MacAddr::broadcast();
-        frame::ethernet_ipv6_udp(mac, mac, src, dst, 64, &[0xab; 4], buf).unwrap()
+        frame::ethernet_ipv6_udp(mac, mac, src, dst, 64, &[0xab; 4], buf)
+            .unwrap()
+            .len
     }
 
     #[test]

@@ -47,7 +47,7 @@ use crate::reactor::{Arena, ControlEvent, Handler, Key, Reactor, ReadyEvent};
 
 use self::counters::log_counters;
 use self::datagram::{build_udp, ethernet_dst};
-use self::interface_table::InterfaceTable;
+use self::interface_table::{InterfaceTable, SentFrame};
 
 /// The most frames drained per readable event before yielding, so a flooded interface
 /// can't starve the others. `AF_PACKET` stops here and the level-triggered wait
@@ -267,6 +267,12 @@ pub(crate) struct PacketDispatcher {
     /// [`RECONCILE_RETRY`] while an interface is parked absent or a rebuild step failed, `now`
     /// when a capture read error pulls it forward.
     next_reconcile: Instant,
+    /// The number of the packet being routed, from 1: the scope of the duplicate-send check in
+    /// [`send_udp`](Self::send_udp).
+    packet: u64,
+    /// Whether [`route`](Self::route) is running; a send outside it (a timer, a session) is
+    /// never a duplicate of a packet's re-emit.
+    routing: bool,
 }
 
 impl PacketDispatcher {
@@ -293,6 +299,8 @@ impl PacketDispatcher {
             report: None,
             max_seen_ifindex: 0,
             next_reconcile: Instant::now() + RECONCILE_TICK,
+            packet: 0,
+            routing: false,
         }
     }
 
@@ -473,7 +481,7 @@ impl PacketDispatcher {
             log::warn!("egress {egress:?} unavailable (drained or unknown); datagram dropped");
             return Ok(());
         };
-        let n = build_udp(
+        let built = build_udp(
             &addrs,
             link,
             dst,
@@ -484,7 +492,25 @@ impl PacketDispatcher {
             &mut self.scratch,
         )
         .map_err(io::Error::other)?;
-        self.send(egress, &self.scratch[..n])
+        // Two entries whose legs coincide (per-device entries on one pair, whose query legs
+        // carry no MAC filter) both relay a packet; the second's frame equals the first's. Noted
+        // only once sent, so a failed send leaves the second to try.
+        let frame = self.routing.then_some(SentFrame {
+            packet: self.packet,
+            len: built.len,
+            checksum: built.udp_checksum,
+        });
+        if let Some(frame) = frame
+            && self.table.is_last_sent(egress, frame)
+        {
+            log::trace!("egress {egress:?}: an equal frame already went out for this packet");
+            return Ok(());
+        }
+        self.send(egress, &self.scratch[..built.len])?;
+        if let Some(frame) = frame {
+            self.table.set_last_sent(egress, frame);
+        }
+        Ok(())
     }
 
     /// Inject a broadcast/multicast UDP datagram on `egress`, deriving the L2 destination MAC from
@@ -641,6 +667,8 @@ impl PacketDispatcher {
             .table
             .egress_addrs(ingress)
             .and_then(InterfaceAddresses::v4_directed_broadcast);
+        self.packet += 1;
+        self.routing = true;
         let mut final_outcome: Option<Outcome> = None;
         for i in 0..self.route_keys.len() {
             let key = self.route_keys[i];
@@ -681,6 +709,7 @@ impl PacketDispatcher {
                 }
             });
         }
+        self.routing = false;
         // One packet, one count: record the folded outcome on the ingress capture's row. The row
         // always exists: `route` is reached only via the drain, whose take-out guard admits only a
         // real, in-range ingress key.

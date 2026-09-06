@@ -1,0 +1,15 @@
+log_level = "debug"
+
+# Two entries on one pair that differ only in their device: both build an unfiltered query leg, so
+# a query would go out twice without the duplicate-send check.
+[reflectors.tv]
+source_if = "nf_source"
+target_if = "nf_target"
+mdns = true
+macs = ["02:42:ac:11:00:09"]
+
+[reflectors.printer]
+source_if = "nf_source"
+target_if = "nf_target"
+mdns = true
+macs = ["02:42:ac:11:00:0c"]

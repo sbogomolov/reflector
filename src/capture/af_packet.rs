@@ -455,7 +455,8 @@ mod tests {
         let mac = MacAddr::broadcast();
         let mut buf = [0u8; 256];
         let n = frame::ethernet_ipv4_udp(mac, mac, src, dst, 64, PROBE, &mut buf)
-            .expect("build Ethernet frame");
+            .expect("build Ethernet frame")
+            .len;
 
         // The injected frame loops to the input tap and waits there until drained, so
         // one send then polling captures it.
