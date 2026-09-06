@@ -26,19 +26,41 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-namespace OPNsense\Netflector\Migrations;
+namespace OPNsense\Netflector\FieldTypes;
 
-use OPNsense\Base\BaseModelMigration;
+use OPNsense\Base\FieldTypes\BaseSetField;
+use OPNsense\Base\Validators\CallbackValidator;
 
-class M0_1_1 extends BaseModelMigration
+/**
+ * A list of UDP ports, each 1-65535. Not a PortField: that holds one port and, with Multiple set to
+ * hold several, sends the client all 65535 options. Digits only and no leading zero.
+ */
+class PortListField extends BaseSetField
 {
-    /* 0.1.1 dropped Trace from log_level: release builds compile it out, so it delivered debug
-     * output under another name. Rewrite a stored trace before the shrunken option list turns it
-     * invalid. */
-    public function run($model)
+    public function setValue($value)
     {
-        if ((string)$model->general->log_level === 'trace') {
-            $model->general->log_level = 'debug';
+        $items = array_map('trim', explode($this->internalFieldSeparator, (string)$value));
+        parent::setValue(implode($this->internalFieldSeparator, array_unique($items)));
+    }
+
+    protected function defaultValidationMessage()
+    {
+        return gettext('Please specify valid port numbers (1-65535).');
+    }
+
+    public function getValidators()
+    {
+        $validators = parent::getValidators();
+        if ($this->isSet()) {
+            $validators[] = new CallbackValidator(["callback" => function ($data) {
+                foreach ($this->iterateInput($data) as $port) {
+                    if (!ctype_digit($port) || str_starts_with($port, '0') || (int)$port > 65535) {
+                        return [$this->getValidationMessage()];
+                    }
+                }
+                return [];
+            }]);
         }
+        return $validators;
     }
 }

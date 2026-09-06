@@ -106,7 +106,7 @@
           <ssdp>1</ssdp>
           <dial>1</dial>
           <wsd>0</wsd>
-          <macs>B0:37:95:C5:60:BE,C4:9D:8F:11:22:33</macs>
+          <macs>B0-37-95-C5-60-BE,c49d.8f11.2233</macs>
           <address_family>ipv4</address_family>
         </reflector>
         <reflector uuid="9a1b0c62-4c58-4b2e-9a41-6f2f5d7a0002">

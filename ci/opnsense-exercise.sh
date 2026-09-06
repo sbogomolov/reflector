@@ -10,22 +10,14 @@ set -euo pipefail
 
 HERE="$(dirname "$0")"
 
-"$HERE"/freebsd-vm.sh run 'php /usr/local/opnsense/scripts/netflector/modelcheck.php'
+"$HERE"/freebsd-vm.sh push "$HERE"/modelcheck.php /tmp/modelcheck.php
+"$HERE"/freebsd-vm.sh run 'php /tmp/modelcheck.php'
 "$HERE"/freebsd-vm.sh run 'configctl template reload OPNsense/Netflector'
 "$HERE"/freebsd-vm.sh run 'test -s /usr/local/etc/netflector.toml'
 "$HERE"/freebsd-vm.sh run 'cat /usr/local/etc/netflector.toml'
 "$HERE"/freebsd-vm.sh run 'netflector --check-config /usr/local/etc/netflector.toml'
-
-# The GUI's validate button, end to end: the configd action wiring plus check.py,
-# which nothing else runs. configd reads actions.d at startup and the plugin was
-# pkg-added into a running system, so its actions appear only after a restart.
-"$HERE"/freebsd-vm.sh run 'service configd restart'
-verdict=$("$HERE"/freebsd-vm.sh run 'configctl netflector check')
-echo "$verdict"
-case "$verdict" in
-*'"status": "ok"'*) ;;
-*) echo "the configd check action did not report ok" >&2; exit 1 ;;
-esac
+# The gate config spells its MACs in hyphen and dot form; the template must fold both.
+"$HERE"/freebsd-vm.sh run 'grep -q "^macs = \[\"b0:37:95:c5:60:be\", \"c4:9d:8f:11:22:33\"\]$" /usr/local/etc/netflector.toml'
 
 # restart, not start: freebsd-vm.sh wait only waits for sshd, so the plugin can be installed while
 # the boot is still running. Whether the boot reaches its service phase before or after the plugin

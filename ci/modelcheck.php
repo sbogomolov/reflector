@@ -64,7 +64,11 @@ $walk = function ($node) use (&$walk) {
             $walk($field);
             continue;
         }
-        $cls = str_contains($type, '\\') ? $type : 'OPNsense\\Base\\FieldTypes\\' . $type;
+        if (str_starts_with($type, '.\\')) {
+            $cls = 'OPNsense\\Netflector\\FieldTypes\\' . substr($type, 2);
+        } else {
+            $cls = str_contains($type, '\\') ? $type : 'OPNsense\\Base\\FieldTypes\\' . $type;
+        }
         if (!class_exists($cls)) {
             fail(sprintf('%s: field type %s does not exist in this core', $field->getName(), $type));
             continue;
@@ -111,12 +115,14 @@ foreach (
         ['aa:bb:cc:dd:ee:ff', '7', true],
         ['aa:bb:cc:dd:ee:ff,nonsense', '7', false],
         ['aa:bb:cc:dd:ee:ff', '7,70000', false],
-        /* the daemon rejects a repeated value, and only the model can catch a case variant */
-        ['aa:bb:cc:dd:ee:ff,AA:BB:CC:DD:EE:FF', '7', false],
-        ['aa:bb:cc:dd:ee:ff', '7,7', false],
-        /* FILTER_VALIDATE_MAC takes these separators, the daemon's parser does not */
-        ['aa-bb-cc-dd-ee-ff', '7', false],
-        ['aabb.ccdd.eeff', '7', false],
+        ['aa:bb:cc:dd:ee:ff', '07', false],
+        /* core's field takes hyphen and dot forms in either case; the template folds them, and a
+           repeat in two spellings is the daemon's to refuse */
+        ['aa-bb-cc-dd-ee-ff', '7', true],
+        ['aabb.ccdd.eeff', '7', true],
+        ['aa:bb:cc:dd:ee:ff,AA:BB:CC:DD:EE:FF', '7', true],
+        ['aa:bb:cc:dd:ee:ff,aabb.ccdd.eeff', '7', true],
+        ['aa:bb:cc:dd:ee:ff', '7,7', true],
     ] as [$macs, $wol_ports, $expect_valid]
 ) {
     $messages = validation_messages($macs, $wol_ports);

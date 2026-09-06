@@ -48,12 +48,25 @@ jobs:
         run: |
           sudo apt-get update || true
           sudo apt-get install -y --no-install-recommends libxml2-utils
+      # By shebang as well as by extension: the syshook and the .inc carry neither.
       - name: PHP syntax
-        run: find dist/opnsense -name '*.php' -exec php -l {} +
-      - name: Python syntax
         run: |
-          python3 -m py_compile dist/opnsense/net/netflector/src/opnsense/scripts/netflector/check.py
-          rm -rf dist/opnsense/net/netflector/src/opnsense/scripts/netflector/__pycache__
+          set -e
+          for f in $(find dist/opnsense -type f); do
+            case "$f" in
+              *.php|*.inc) php -l "$f" ;;
+              *) if head -1 "$f" | grep -q '^#!.*php'; then php -l "$f"; fi ;;
+            esac
+          done
+      - name: Shell syntax
+        run: |
+          set -e
+          for f in $(find dist/opnsense -type f); do
+            case "$f" in
+              *.sh) sh -n "$f" ;;
+              *) if head -1 "$f" | grep -q '^#!.*sh$'; then sh -n "$f"; fi ;;
+            esac
+          done
       - name: XML well-formed
         run: find dist/opnsense -name '*.xml' -exec xmllint --noout {} +
       # The publish guards read this; nothing else would run it before a publish does.

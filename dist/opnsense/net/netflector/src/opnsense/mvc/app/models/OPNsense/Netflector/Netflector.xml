@@ -1,6 +1,6 @@
 <model>
     <mount>//OPNsense/Netflector</mount>
-    <version>0.1.1</version>
+    <version>1.0.0</version>
     <description>Netflector settings</description>
     <items>
         <general>
@@ -41,6 +41,13 @@
                     <Required>Y</Required>
                     <Mask>/^[0-9a-zA-Z_-]{1,32}$/u</Mask>
                     <ValidationMessage>The name identifies the reflector in the log and in the generated configuration. Use 1 to 32 letters, digits, dashes or underscores.</ValidationMessage>
+                    <Constraints>
+                        <check001>
+                            <type>UniqueConstraint</type>
+                            <caseInsensitive>Y</caseInsensitive>
+                            <ValidationMessage>This name is already used. Names are compared case-insensitive.</ValidationMessage>
+                        </check001>
+                    </Constraints>
                 </name>
                 <source_if type="InterfaceField">
                     <Required>Y</Required>
@@ -53,6 +60,15 @@
                 <wol type="BooleanField">
                     <Default>0</Default>
                     <Required>Y</Required>
+                    <Constraints>
+                        <check001>
+                            <type>DependConstraint</type>
+                            <addFields>
+                                <field1>wol_ports</field1>
+                            </addFields>
+                            <ValidationMessage>Wake-on-LAN ports only apply when Wake-on-LAN is enabled.</ValidationMessage>
+                        </check001>
+                    </Constraints>
                 </wol>
                 <mdns type="BooleanField">
                     <Default>0</Default>
@@ -61,6 +77,15 @@
                 <ssdp type="BooleanField">
                     <Default>0</Default>
                     <Required>Y</Required>
+                    <Constraints>
+                        <check001>
+                            <type>DependConstraint</type>
+                            <addFields>
+                                <field1>dial</field1>
+                            </addFields>
+                            <ValidationMessage>The DIAL proxy needs SSDP enabled.</ValidationMessage>
+                        </check001>
+                    </Constraints>
                 </ssdp>
                 <dial type="BooleanField">
                     <Default>0</Default>
@@ -74,19 +99,15 @@
                     <AsList>Y</AsList>
                     <ValidationMessage>Enter one or more MAC addresses to scope this reflector to specific devices. Leave empty to reflect for the whole network.</ValidationMessage>
                 </macs>
-                <!-- Not a PortField: that one enumerates all 65535 ports as selectable options, which is
-                     right for a firewall rule and absurd here. It made the edit dialog fetch 2.5 MB and
-                     hang. CSVListField validates each item against the mask and stores a plain list. -->
-                <wol_ports type="CSVListField">
-                    <MaskPerItem>Y</MaskPerItem>
-                    <Mask>/^([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/u</Mask>
+                <wol_ports type=".\PortListField">
+                    <AsList>Y</AsList>
                     <ValidationMessage>Enter the UDP ports magic packets arrive on, as numbers between 1 and 65535. The daemon defaults to 7 and 9.</ValidationMessage>
                 </wol_ports>
                 <address_family type="OptionField">
                     <Default>default</Default>
                     <Required>Y</Required>
                     <OptionValues>
-                        <default>Default (IPv4 required, IPv6 best-effort)</default>
+                        <option value="default">Default (IPv4 required, IPv6 best-effort)</option>
                         <dual>Dual (IPv4 and IPv6, both required)</dual>
                         <ipv4>IPv4 only</ipv4>
                         <ipv6>IPv6 only</ipv6>
