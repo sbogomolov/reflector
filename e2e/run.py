@@ -507,6 +507,19 @@ MDNS_CASES = [
         group=MDNS_GROUP_V4,
         direction="forward",
     ),
+    # Two per-device entries on one pair share the query leg; the receiver fails on a second copy.
+    TestCase(
+        name="per_device_entries_relay_a_query_once",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=MDNS_QUERY_HEX,
+        expect_payload_hex=MDNS_QUERY_HEX,
+        group=MDNS_GROUP_V4,
+        direction="forward",
+        config="config-per-device.toml",
+    ),
     TestCase(
         name="reflects_mdns_response",
         send_port=MDNS_PORT,

@@ -38,6 +38,17 @@ struct CaptureEntry {
     capture: Option<Capture>,
     interface: InterfaceKey,
     counters: CaptureCounters,
+    last_sent: SentFrame,
+}
+
+/// The last frame sent on a capture, tagged with the packet whose routing sent it. A packet's
+/// routing sends one frame per egress, so an equal frame for the same packet is a second handler
+/// relaying what the first already did. `packet` counts from 1, so the default never matches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SentFrame {
+    pub(super) packet: u64,
+    pub(super) len: usize,
+    pub(super) checksum: u16,
 }
 
 /// One interface paired with its multicast joiner. Bundling them keeps the two from desyncing (one
@@ -123,6 +134,20 @@ impl InterfaceTable {
         Ok(self.add_interface(Interface::open(name)?))
     }
 
+    /// Whether `frame` is the last one sent on `egress`. An unknown key never sent anything.
+    pub(super) fn is_last_sent(&self, egress: CaptureKey, frame: SentFrame) -> bool {
+        self.captures
+            .get(egress.0 as usize)
+            .is_some_and(|entry| entry.last_sent == frame)
+    }
+
+    /// Set `frame` as the last one sent on `egress`, once its send succeeded.
+    pub(super) fn set_last_sent(&mut self, egress: CaptureKey, frame: SentFrame) {
+        if let Some(entry) = self.captures.get_mut(egress.0 as usize) {
+            entry.last_sent = frame;
+        }
+    }
+
     /// Add a capture bound to `interface`, returning its key. Startup-only.
     pub(super) fn add_capture(&mut self, capture: Capture, interface: InterfaceKey) -> CaptureKey {
         let key = CaptureKey(u32::try_from(self.captures.len()).expect("capture count fits a u32"));
@@ -130,6 +155,7 @@ impl InterfaceTable {
             capture: Some(capture),
             interface,
             counters: CaptureCounters::default(),
+            last_sent: SentFrame::default(),
         });
         key
     }
@@ -509,6 +535,7 @@ mod tests {
                 capture: None,
                 interface: InterfaceKey(0),
                 counters: CaptureCounters::default(),
+                last_sent: SentFrame::default(),
             });
             key
         }
@@ -546,6 +573,35 @@ mod tests {
     // refresh_by_ifindex re-resolves only the interface(s) with the matching kernel index, reporting
     // the changed fields (`None` for an unwatched index). Resolution is unprivileged (no capture
     // needed), so this exercises the monitor's refresh path without CAP_NET_RAW.
+    #[test]
+    fn is_last_sent_matches_only_the_set_frame_for_the_same_packet() {
+        let mut table = InterfaceTable::new();
+        let egress = table.add_test_capture();
+        let other = table.add_test_capture();
+        let frame = SentFrame {
+            packet: 1,
+            len: 60,
+            checksum: 0x1234,
+        };
+        // Nothing set yet: a failed send leaves it that way, so a retry goes out.
+        assert!(!table.is_last_sent(egress, frame));
+        table.set_last_sent(egress, frame);
+        assert!(table.is_last_sent(egress, frame));
+        // Another egress, another length or checksum, or the next packet: not the same frame.
+        assert!(!table.is_last_sent(other, frame));
+        assert!(!table.is_last_sent(egress, SentFrame { len: 61, ..frame }));
+        assert!(!table.is_last_sent(
+            egress,
+            SentFrame {
+                checksum: 0x1235,
+                ..frame
+            }
+        ));
+        assert!(!table.is_last_sent(egress, SentFrame { packet: 2, ..frame }));
+        assert!(!table.is_last_sent(CaptureKey::from_u64(999), frame));
+        table.set_last_sent(CaptureKey::from_u64(999), frame); // an unknown key is a no-op
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "resolves a real interface")]
     fn refresh_by_ifindex_targets_the_matching_interface() -> io::Result<()> {
