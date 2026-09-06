@@ -1077,13 +1077,9 @@ mod tests {
         let mut reactor = Reactor::new().unwrap();
         let (a, _pa) = pair();
         let hk = reactor.register(TestHandler::read(a, |_, _| {}));
-        // A closed (but non-negative) fd fails the kernel add; nothing allocates an fd between the
-        // close and the watch, so the number isn't reused.
-        let closed = {
-            let (c, _pc) = pair();
-            c.as_raw_fd()
-        };
-        assert!(reactor.watch(hk, closed, 0).is_err());
+        // The largest descriptor number is never open, so the kernel add fails with EBADF; a
+        // closed one would not do, as another test thread can reuse its number before the watch.
+        assert!(reactor.watch(hk, RawFd::MAX, 0).is_err());
         // The handler is intact and can still watch a good fd afterward.
         assert!(reactor.is_registered(hk));
         let (b, _pb) = pair();
