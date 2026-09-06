@@ -3,5 +3,5 @@
 # compiles with one known rustc, and a new stable can't silently change codegen or fail a release
 # build on a fresh warn-by-default lint. Renovate's rust-toolchain manager bumps this via a CI-gated
 # PR; the Dockerfile's RUST_IMAGE tag names the same version and has to move with it.
-channel = "1.98.0"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
